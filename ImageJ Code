@@ -1,0 +1,139 @@
+// ImageJ script to perform a recursive search starting from points marked with the Multi-point tool
+// It spreads a bounding box across all adjacent white pixels, turns affected gray pixels back to white, and then uses the measure function to export the data for each point
+
+importClass(Packages.ij.IJ);
+importClass(Packages.ij.measure.ResultsTable);
+importClass(Packages.ij.gui.PointRoi);
+importClass(Packages.ij.gui.Roi);
+importClass(Packages.ij.plugin.filter.Analyzer);
+
+var rt = new ResultsTable(); // Initialize the ResultsTable once
+Analyzer.setResultsTable(rt);
+
+function recursiveSearch(imp, x, y, oldValue, newValue, bounds) {
+    var stack = [[x, y]];
+    var width = imp.getWidth();
+    var height = imp.getHeight();
+    var ip = imp.getProcessor();
+    
+    while (stack.length > 0) {
+        var point = stack.pop();
+        var px = point[0];
+        var py = point[1];
+
+        if (px < 0 || px >= width || py < 0 || py >= height) continue;
+        if (ip.get(px, py) != oldValue) continue;
+
+        ip.set(px, py, newValue);
+        
+        bounds.minX = Math.min(bounds.minX, px);
+        bounds.maxX = Math.max(bounds.maxX, px);
+        bounds.minY = Math.min(bounds.minY, py);
+        bounds.maxY = Math.max(bounds.maxY, py);
+        
+        stack.push([px + 1, py]);
+        stack.push([px - 1, py]);
+        stack.push([px, py + 1]);
+        stack.push([px, py - 1]);
+    }
+}
+
+function measureBoundingBox(imp, x, y) {
+    var ip = imp.getProcessor();
+    var oldValue = ip.get(x, y);
+    if (oldValue < 250) {
+        IJ.log("Starting point is not a white pixel (value >= 250)");
+        return null;
+    }
+
+    var newValue = 128; // Use 128 to mark filled pixels
+    var bounds = { minX: x, maxX: x, minY: y, maxY: y };
+    
+    recursiveSearch(imp, x, y, oldValue, newValue, bounds);
+    
+    // Turn affected gray pixels back to white
+    for (var px = bounds.minX; px <= bounds.maxX; px++) {
+        for (var py = bounds.minY; py <= bounds.maxY; py++) {
+            if (ip.get(px, py) == newValue) {
+                ip.set(px, py, 255);
+            }
+        }
+    }
+    
+    var roi = new Roi(bounds.minX, bounds.minY, bounds.maxX - bounds.minX + 1, bounds.maxY - bounds.minY + 1);
+    imp.setRoi(roi);
+    
+    return bounds;
+}
+
+function recordResults(bounds, imp) {
+    if (bounds == null) return;
+    
+    // Determine if the bounding box is vertical and tall or horizontal and wide
+    var width = bounds.maxX - bounds.minX + 1;
+    var height = bounds.maxY - bounds.minY + 1;
+    var minFeret = Math.min(width, height);
+    var orientation;
+    
+    if (height > width) {
+        orientation = "vertical and tall";
+    } else {
+        orientation = "horizontal and wide";
+    }
+    
+    // Calculate area and mean value of pixels
+    var area = width * height;
+    var ip = imp.getProcessor();
+    var sum = 0;
+    var count = 0;
+    for (var px = bounds.minX; px <= bounds.maxX; px++) {
+        for (var py = bounds.minY; py <= bounds.maxY; py++) {
+            sum += ip.get(px, py);
+            count++;
+        }
+    }
+    var meanValue = sum / count;
+
+    // Calculate squareness
+    var squareness = width / height;
+    
+    // Log the bounding box dimensions, orientation, MinFeret, area, mean value of pixels, and squareness
+    IJ.log("Bounding box dimensions: width=" + width + ", height=" + height + ", orientation=" + orientation + ", MinFeret=" + minFeret + ", area=" + area + ", mean value=" + meanValue + ", squareness=" + squareness);
+    
+    // Store the dimensions, orientation, MinFeret, area, mean value of pixels, and squareness in the ResultsTable
+    rt.incrementCounter();
+    rt.addValue("Area", area);
+    rt.addValue("MeanValue", meanValue);
+    rt.addValue("Width", width);
+    rt.addValue("Height", height);
+    rt.addValue("Orientation", orientation);
+    rt.addValue("MinFeret", minFeret);
+    rt.addValue("Squareness", squareness);
+    
+    // Show the accumulated results
+    rt.show("Results");
+}
+
+function start() {
+    // Get the current image
+    var imp = IJ.getImage();
+    
+    // Get the current ROI
+    var roi = imp.getRoi();
+    if (roi == null || !(roi instanceof PointRoi)) {
+        IJ.log("Please select points using the Multi-point tool.");
+        return;
+    }
+    
+    var points = roi.getContainedPoints();
+    
+    // Ensure we are dealing with a PointRoi
+    for (var i = 0; i < points.length; i++) {
+        var pt = points[i];
+        var bounds = measureBoundingBox(imp, pt.x, pt.y);
+        recordResults(bounds, imp);
+    }
+}
+
+// Run the function to start the process
+start();
